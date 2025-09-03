@@ -1,0 +1,241 @@
+RTL code
+`timescale 1ns / 1ps
+
+module automatic_washing_machine(
+    input clk,
+    input rst,
+    input door_close,
+    input start,
+    input filled,
+    input detergent_added,
+    input cycle_timeout,
+    input drained,
+    input spin_timeout,
+    output reg door_lock,
+    output reg motor_on,
+    output reg fill_valve_on,
+    output reg drain_valve_on,
+    output reg done,
+    output reg soap_wash,
+    output reg water_wash
+);
+
+// State encoding
+parameter check_door     = 3'b000;
+parameter fill_water     = 3'b001;
+parameter add_detergent  = 3'b010;
+parameter cycle          = 3'b011;
+parameter drain_water    = 3'b100;
+parameter spin           = 3'b101;
+
+reg [2:0] cst, nst;
+
+// Combinational logic
+always @(*) begin
+    // Default assignments (to avoid latches)
+    nst = cst;
+    motor_on = 0;
+    fill_valve_on = 0;
+    drain_valve_on = 0;
+    door_lock = 0;
+    done = 0;
+    soap_wash = soap_wash;   // maintain previous unless explicitly changed
+    water_wash = water_wash; // maintain previous unless explicitly changed
+
+    case(cst)
+
+        // State 0: Check Door
+        check_door: begin
+            if (start && door_close) begin
+                nst = fill_water;
+                door_lock = 1;
+            end
+            else begin
+                nst = check_door;
+            end
+        end
+
+        // State 1: Fill Water
+        fill_water: begin
+            door_lock = 1;
+            fill_valve_on = 1;
+            if (filled) begin
+                if (!soap_wash) begin
+                    nst = add_detergent;
+                end else begin
+                    nst = cycle;
+                    water_wash = 1;
+                end
+            end
+        end
+
+        // State 2: Add Detergent
+        add_detergent: begin
+            door_lock = 1;
+            if (detergent_added) begin
+                nst = cycle;
+                soap_wash = 1;
+            end
+        end
+
+        // State 3: Washing Cycle
+        cycle: begin
+            door_lock = 1;
+            motor_on = 1;
+            if (cycle_timeout) begin
+                nst = drain_water;
+                motor_on = 0;
+            end
+        end
+
+        // State 4: Drain Water
+        drain_water: begin
+            door_lock = 1;
+            drain_valve_on = 1;
+            if (drained) begin
+                if (!water_wash) begin
+                    nst = fill_water; // Go for second wash
+                end else begin
+                    nst = spin;
+                end
+            end
+        end
+
+        // State 5: Spin Drying
+        spin: begin
+            door_lock = 1;
+            motor_on = 1;
+            if (spin_timeout) begin
+                nst = check_door; // Restart process
+                done = 1;
+                motor_on = 0;
+            end
+        end
+
+        default: nst = check_door;
+    endcase
+end
+
+// Sequential logic for state update
+always @(posedge clk or posedge rst) begin
+    if (rst) begin
+        cst <= check_door;
+        soap_wash <= 0;
+        water_wash <= 0;
+    end else begin
+        cst <= nst;
+    end
+end
+
+endmodule
+
+test bench
+`timescale 1ns / 1ps
+
+module tb_automatic_washing_machine;
+
+// Testbench signals
+reg clk;
+reg rst;
+reg door_close;
+reg start;
+reg filled;
+reg detergent_added;
+reg cycle_timeout;
+reg drained;
+reg spin_timeout;
+
+wire door_lock;
+wire motor_on;
+wire fill_valve_on;
+wire drain_valve_on;
+wire done;
+wire soap_wash;
+wire water_wash;
+
+// Instantiate DUT
+automatic_washing_machine dut (
+    .clk(clk),
+    .rst(rst),
+    .door_close(door_close),
+    .start(start),
+    .filled(filled),
+    .detergent_added(detergent_added),
+    .cycle_timeout(cycle_timeout),
+    .drained(drained),
+    .spin_timeout(spin_timeout),
+    .door_lock(door_lock),
+    .motor_on(motor_on),
+    .fill_valve_on(fill_valve_on),
+    .drain_valve_on(drain_valve_on),
+    .done(done),
+    .soap_wash(soap_wash),
+    .water_wash(water_wash)
+);
+
+// Clock generation
+always #5 clk = ~clk; // 10ns period
+
+// Test sequence
+initial begin
+    // Initialize inputs
+    clk = 0;
+    rst = 1;
+    door_close = 0;
+    start = 0;
+    filled = 0;
+    detergent_added = 0;
+    cycle_timeout = 0;
+    drained = 0;
+    spin_timeout = 0;
+
+    // Reset pulse
+    #20 rst = 0;
+
+    // Step 1: Close door and start machine
+    #10 door_close = 1;
+    start = 1;
+
+    // Wait for machine to reach fill_water state
+    #30 filled = 1;
+
+    // Step 2: Detergent is added
+    #20 detergent_added = 1;
+
+    // Step 3: Washing cycle starts
+    #20 detergent_added = 0; // Reset detergent signal
+    #50 cycle_timeout = 1;   // Washing done
+
+    // Step 4: Start draining
+    #20 cycle_timeout = 0;
+    #30 drained = 1;
+
+    // Step 5: Fill water again for second wash
+    #30 drained = 0;
+    #40 filled = 1;
+
+    // Step 6: Skip detergent this time (water wash)
+    #20 filled = 0;
+    #40 cycle_timeout = 1;
+
+    // Step 7: Drain again after water wash
+    #20 cycle_timeout = 0;
+    #30 drained = 1;
+
+    // Step 8: Spin drying
+    #30 drained = 0;
+    #40 spin_timeout = 1;
+
+    // End simulation
+    #50 $finish;
+end
+
+// Monitor signals
+initial begin
+    $monitor("TIME=%0t | State=%b | DoorLock=%b | Motor=%b | Fill=%b | Drain=%b | SoapWash=%b | WaterWash=%b | Done=%b",
+             $time, dut.cst, door_lock, motor_on, fill_valve_on, drain_valve_on, soap_wash, water_wash, done);
+end
+
+endmodule
+
+
